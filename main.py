@@ -1,17 +1,28 @@
+import os
+import psycopg2
+import time
+import dotenv
+import logging
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
-import psycopg2
-import time
-from selenium.common.exceptions import NoSuchElementException, ElementClickInterceptedException
-import dotenv
-import os
+from selenium.common.exceptions import NoSuchElementException, ElementClickInterceptedException, StaleElementReferenceException
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+import asyncio
+
+dotenv.load_dotenv()
+
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+
+TOKEN = os.environ.get('TELEGRAM_TOKEN')
 
 def connect_db():
-    dotenv.load_dotenv()
-
     dbname = os.environ.get('DB_NAME')
     dbuser = os.environ.get('DB_USER')
     dbpassword = os.environ.get('DB_PASSWORD')
@@ -108,13 +119,22 @@ def parse_habr(query):
                 vacancy_id = insert_vacancy(conn, company, title, meta_info, salary, skills, link)
 
                 print(f'Компания: {company}\nВакансия: {title}\nСсылка: {link}\nМестоположение и режим работы: {meta_info}\nЗарплата: {salary}\nСкиллы: {skills}')
-                
-        
+
             try:
                 next_button = driver.find_element(By.CSS_SELECTOR, 'a.button-comp--appearance-pagination-button[rel="next"]')
                 driver.execute_script("arguments[0].scrollIntoView(true);", next_button)
                 time.sleep(1)
-                driver.execute_script("arguments[0].click();", next_button)
+                
+                for _ in range(3):
+                    try:
+                        driver.execute_script("arguments[0].click();", next_button)
+                        break
+                    except StaleElementReferenceException:
+                        next_button = driver.find_element(By.CSS_SELECTOR, 'a.button-comp--appearance-pagination-button[rel="next"]')
+                        time.sleep(1)
+                else:
+                    break
+                
                 time.sleep(1)
             except (NoSuchElementException, ElementClickInterceptedException):
                 break
@@ -123,7 +143,44 @@ def parse_habr(query):
         driver.quit()
         conn.close()
 
-if __name__ == '__main__':
-    query = 'Go разработчик'
-    parse_habr(query)
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text('Этот бот создан Савельевым Иваном из группы БВТ2306 для летней практики.\nИспользуйте /search <запрос>, чтобы искать вакансии.')
 
+async def search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = ' '.join(context.args)
+    logging.info(f"Получен запрос для поиска: {query}")
+    if not query:
+        await update.message.reply_text('Пожалуйста, введите запрос после команды /search.')
+        return
+
+    await update.message.reply_text(f'Ищу вакансии для: {query}')
+    await run_parse_habr(query)
+    await update.message.reply_text('Поиск завершен. Проверьте свою базу данных.')
+
+async def run_parse_habr(query: str):
+    from concurrent.futures import ThreadPoolExecutor
+
+    loop = asyncio.get_event_loop()
+    executor = ThreadPoolExecutor()
+    
+    await loop.run_in_executor(executor, parse_habr, query)
+
+async def recent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    conn = connect_db()
+    with conn.cursor() as cur:
+        cur.execute("SELECT company, vacancy, location, salary, skills, link FROM vacancies ORDER BY id DESC LIMIT 5;")
+        rows = cur.fetchall()
+        for row in rows:
+            await update.message.reply_text(f'Компания: {row[0]}\nВакансия: {row[1]}\nМестоположение: {row[2]}\nЗарплата: {row[3]}\nСкиллы: {row[4]}\nСсылка: {row[5]}\n')
+
+def main():
+    application = Application.builder().token(TOKEN).build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("search", search))
+    application.add_handler(CommandHandler("recent", recent))
+
+    application.run_polling()
+
+if __name__ == '__main__':
+    main()
