@@ -9,8 +9,8 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import NoSuchElementException, ElementClickInterceptedException, StaleElementReferenceException
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 import asyncio
 
 dotenv.load_dotenv()
@@ -156,6 +156,14 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(f'Ищу вакансии для: {query}')
     await run_parse_habr(query)
     await update.message.reply_text('Поиск завершен. Проверьте свою базу данных.')
+    await update.message.reply_text('Ниже представлены 5 последних вакансий в бд')
+
+    conn = connect_db()
+    with conn.cursor() as cur:
+        cur.execute("SELECT company, vacancy, location, salary, skills, link FROM vacancies ORDER BY id DESC LIMIT 5;")
+        rows = cur.fetchall()
+        for row in rows:
+            await update.message.reply_text(f'Компания: {row[0]}\nВакансия: {row[1]}\nМестоположение: {row[2]}\nЗарплата: {row[3]}\nСкиллы: {row[4]}\nСсылка: {row[5]}\n')
 
 async def run_parse_habr(query: str):
     from concurrent.futures import ThreadPoolExecutor
@@ -173,12 +181,49 @@ async def recent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         for row in rows:
             await update.message.reply_text(f'Компания: {row[0]}\nВакансия: {row[1]}\nМестоположение: {row[2]}\nЗарплата: {row[3]}\nСкиллы: {row[4]}\nСсылка: {row[5]}\n')
 
+async def count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    conn = connect_db()
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM vacancies;")
+        count = cur.fetchone()[0]
+    conn.close()
+    await update.message.reply_text(f'Общее количество вакансий в базе данных: {count}')
+
+async def grafic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    keyboard = [
+        [
+            InlineKeyboardButton("Неполный рабочий день", callback_data='part_time'),
+            InlineKeyboardButton("Полный рабочий день", callback_data='full_time')
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text('Выберите график работы:', reply_markup=reply_markup)
+
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    query_data = query.data
+
+    conn = connect_db()
+    with conn.cursor() as cur:
+        if query_data == 'part_time':
+            cur.execute("SELECT COUNT(*) FROM vacancies WHERE location ILIKE '%Неполный рабочий день%';")
+        elif query_data == 'full_time':
+            cur.execute("SELECT COUNT(*) FROM vacancies WHERE location ILIKE '%Полный рабочий день%';")
+        count = cur.fetchone()[0]
+    conn.close()
+
+    await query.answer()
+    await query.edit_message_text(text=f'Количество вакансий с графиком "{query_data}": {count}')
+
 def main():
     application = Application.builder().token(TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("search", search))
     application.add_handler(CommandHandler("recent", recent))
+    application.add_handler(CommandHandler("count", count))
+    application.add_handler(CommandHandler("grafic", grafic))
+    application.add_handler(CallbackQueryHandler(button))
 
     application.run_polling()
 
