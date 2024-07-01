@@ -12,6 +12,8 @@ from selenium.common.exceptions import NoSuchElementException, ElementClickInter
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 import asyncio
+import concurrent.futures
+import random
 
 dotenv.load_dotenv()
 
@@ -49,8 +51,8 @@ def insert_vacancy(conn, company, title, meta_info, salary, skills, link):
         return cur.fetchone()[0]
 
 def parse_habr(query):
-    chromedriver_path = 'C:\chromedriver-win64\chromedriver.exe'
-    chrome_binary_path = 'C:\chrome-win64\chrome.exe'
+    chromedriver_path = "C:/chromedriver-win64/chromedriver.exe"
+    chrome_binary_path = "C:/chrome-win64/chrome.exe"
 
     options = Options()
     options.binary_location = chrome_binary_path
@@ -144,7 +146,7 @@ def parse_habr(query):
         conn.close()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text('Этот бот создан Савельевым Иваном из группы БВТ2306 для летней практики.\nИспользуйте /search <запрос>, чтобы искать вакансии.')
+    await update.message.reply_text('Используйте /search <запрос>, чтобы искать вакансии.')
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = ' '.join(context.args)
@@ -153,31 +155,44 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text('Пожалуйста, введите запрос после команды /search.')
         return
 
+    conn = connect_db()
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM vacancies;")
+        initial_count = cur.fetchone()[0]
+    conn.close()
+
     await update.message.reply_text(f'Ищу вакансии для: {query}')
     await run_parse_habr(query)
     await update.message.reply_text('Поиск завершен. Проверьте свою базу данных.')
-    await update.message.reply_text('Ниже представлены 5 последних вакансий в бд')
 
     conn = connect_db()
     with conn.cursor() as cur:
-        cur.execute("SELECT company, vacancy, location, salary, skills, link FROM vacancies ORDER BY id DESC LIMIT 5;")
+        cur.execute("SELECT company, vacancy, location, salary, skills, link FROM vacancies WHERE id > %s ORDER BY id LIMIT 5;", (initial_count,))
         rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        await update.message.reply_text('Новые вакансии не найдены.')
+    else:
+        await update.message.reply_text('Ниже представлены 5 новых вакансий:')
         for row in rows:
             await update.message.reply_text(f'Компания: {row[0]}\nВакансия: {row[1]}\nМестоположение: {row[2]}\nЗарплата: {row[3]}\nСкиллы: {row[4]}\nСсылка: {row[5]}\n')
 
 async def run_parse_habr(query: str):
-    from concurrent.futures import ThreadPoolExecutor
-
     loop = asyncio.get_event_loop()
-    executor = ThreadPoolExecutor()
-    
+    executor = concurrent.futures.ThreadPoolExecutor()
     await loop.run_in_executor(executor, parse_habr, query)
 
 async def recent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     conn = connect_db()
     with conn.cursor() as cur:
-        cur.execute("SELECT company, vacancy, location, salary, skills, link FROM vacancies ORDER BY id DESC LIMIT 5;")
+        cur.execute("SELECT company, vacancy, location, salary, skills, link FROM vacancies ORDER BY RANDOM() LIMIT 5;")
         rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        await update.message.reply_text('Вакансии не найдены.')
+    else:
         for row in rows:
             await update.message.reply_text(f'Компания: {row[0]}\nВакансия: {row[1]}\nМестоположение: {row[2]}\nЗарплата: {row[3]}\nСкиллы: {row[4]}\nСсылка: {row[5]}\n')
 
@@ -206,7 +221,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     conn = connect_db()
     with conn.cursor() as cur:
         if query_data == 'part_time':
-            cur.execute("SELECT COUNT(*) FROM vacancies WHERE location ILIKE '%Неполный рабочий день%';")
+            cur.execute("SELECT COUNT(*)FROM vacancies WHERE location ILIKE '%Неполный рабочий день%';")
         elif query_data == 'full_time':
             cur.execute("SELECT COUNT(*) FROM vacancies WHERE location ILIKE '%Полный рабочий день%';")
         count = cur.fetchone()[0]
@@ -214,6 +229,44 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await query.answer()
     await query.edit_message_text(text=f'Количество вакансий с графиком "{query_data}": {count}')
+
+async def search_by_company(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    company_name = ' '.join(context.args)
+    logging.info(f"Получен запрос для поиска по компании: {company_name}")
+    if not company_name:
+        await update.message.reply_text('Пожалуйста, введите название компании после команды /search_company.')
+        return
+
+    conn = connect_db()
+    with conn.cursor() as cur:
+        cur.execute("SELECT company, vacancy, location, salary, skills, link FROM vacancies WHERE company ILIKE %s ORDER BY RANDOM() LIMIT 5;", (f"%{company_name}%",))
+        rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        await update.message.reply_text(f'Вакансии компании "{company_name}" не найдены.')
+    else:
+        for row in rows:
+            await update.message.reply_text(f'Компания: {row[0]}\nВакансия: {row[1]}\nМестоположение: {row[2]}\nЗарплата: {row[3]}\nСкиллы: {row[4]}\nСсылка: {row[5]}\n')
+
+async def search_by_vacancy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    vacancy_query = ' '.join(context.args)
+    logging.info(f"Получен запрос для поиска по вакансии: {vacancy_query}")
+    if not vacancy_query:
+        await update.message.reply_text('Пожалуйста, введите название вакансии после команды /search_vacancy.')
+        return
+
+    conn = connect_db()
+    with conn.cursor() as cur:
+        cur.execute("SELECT company, vacancy, location, salary, skills, link FROM vacancies WHERE vacancy ILIKE %s ORDER BY RANDOM() LIMIT 5;", (f"%{vacancy_query}%",))
+        rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        await update.message.reply_text(f'Вакансии по запросу "{vacancy_query}" не найдены.')
+    else:
+        for row in rows:
+            await update.message.reply_text(f'Компания: {row[0]}\nВакансия: {row[1]}\nМестоположение: {row[2]}\nЗарплата: {row[3]}\nСкиллы: {row[4]}\nСсылка: {row[5]}\n')
 
 def main():
     application = Application.builder().token(TOKEN).build()
@@ -224,6 +277,8 @@ def main():
     application.add_handler(CommandHandler("count", count))
     application.add_handler(CommandHandler("grafic", grafic))
     application.add_handler(CallbackQueryHandler(button))
+    application.add_handler(CommandHandler("search_company", search_by_company))
+    application.add_handler(CommandHandler("search_vacancy", search_by_vacancy))
 
     application.run_polling()
 
