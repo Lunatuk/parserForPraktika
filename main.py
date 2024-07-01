@@ -51,11 +51,7 @@ def insert_vacancy(conn, company, title, meta_info, salary, skills, link):
         return cur.fetchone()[0]
 
 def parse_habr(query):
-    chromedriver_path = "C:/chromedriver-win64/chromedriver.exe"
-    chrome_binary_path = "C:/chrome-win64/chrome.exe"
-
     options = Options()
-    options.binary_location = chrome_binary_path
     options.add_argument('--headless')
     options.add_argument('--disable-gpu')
     options.add_argument('--no-sandbox')
@@ -75,8 +71,7 @@ def parse_habr(query):
         'disk-cache-size': 4096
     })
 
-    service = Service(chromedriver_path)
-    driver = webdriver.Chrome(service=service, options=options)
+    driver = webdriver.Chrome(options=options)
 
     conn = connect_db()
 
