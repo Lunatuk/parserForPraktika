@@ -27,7 +27,7 @@ def migrate_db():
         vacancy VARCHAR(255),
         location VARCHAR(255),
         salary VARCHAR(255),
-        skills VARCHAR(255),
+        skills TEXT,
         link TEXT,
         description TEXT
     );
